@@ -4,7 +4,10 @@ mod Permit3 {
     use openzeppelin::{
         access::ownable::OwnableComponent, upgrades::upgradeable::UpgradeableComponent
     };
-    use permit3::components::interface::{permit3::IPermit3, versionable::IVersionable};
+    use permit3::components::{
+        interface::{permit3::IPermit3, versionable::IVersionable},
+        util::storefelt252array::StoreFelt252Array
+    };
 
     #[abi(embed_v0)]
     impl OwnableMixinImpl = OwnableComponent::OwnableMixinImpl<ContractState>;
@@ -17,8 +20,8 @@ mod Permit3 {
         ownable: OwnableComponent::Storage,
         #[substorage(v0)]
         upgradeable: UpgradeableComponent::Storage,
-        /// 
-        rights_map: LegacyMap<(ContractAddress, ContractAddress, ContractAddress, felt252), bool>,
+        /// LegacyMap<(from, operator, contract, rights), number_of_permits>
+        rights_map: LegacyMap<(ContractAddress, ContractAddress, ContractAddress, felt252), u64>,
     }
 
     #[event]
@@ -41,7 +44,7 @@ mod Permit3 {
     #[abi(embed_v0)]
     impl Versionable of IVersionable<ContractState> {
         fn version(self: @ContractState) -> felt252 {
-            '0.0.1'
+            '0.1.0'
         }
     }
 
@@ -52,12 +55,14 @@ mod Permit3 {
             operator: ContractAddress,
             contract: ContractAddress,
             rights: felt252,
-            revoke: bool,
+            number_of_permits: u64,
         ) {
-            self.rights_map.write((get_caller_address(), operator, contract, rights), revoke);
+            self
+                .rights_map
+                .write((get_caller_address(), operator, contract, rights), number_of_permits);
         }
 
-        fn permit_all(ref self: ContractState, operator: ContractAddress, revoke: bool) {
+        fn permit_all(ref self: ContractState, operator: ContractAddress, number_of_permits: u64,) {
             self
                 .rights_map
                 .write(
@@ -67,7 +72,7 @@ mod Permit3 {
                         self.get_permit_all_contracts_constant(),
                         self.get_permit_all_rights_in_contract_constant()
                     ),
-                    revoke
+                    number_of_permits
                 );
         }
 
@@ -75,7 +80,7 @@ mod Permit3 {
             ref self: ContractState,
             operator: ContractAddress,
             contract: ContractAddress,
-            revoke: bool,
+            number_of_permits: u64,
         ) {
             self
                 .rights_map
@@ -86,16 +91,57 @@ mod Permit3 {
                         contract,
                         self.get_permit_all_rights_in_contract_constant()
                     ),
-                    revoke
+                    number_of_permits
                 );
         }
 
+        fn consume_permit_as_operator(
+            ref self: ContractState,
+            from: ContractAddress,
+            contract: ContractAddress,
+            rights: felt252
+        ) -> u64 {
+            let mut number_of_permits = self
+                .rights_map
+                .read((from, get_caller_address(), contract, rights));
+            if number_of_permits != self.get_unlimited_number_of_permits_constant() {
+                number_of_permits -= 1;
+                self
+                    .rights_map
+                    .write((from, get_caller_address(), contract, rights), number_of_permits);
+            }
+            number_of_permits
+        }
+
+        fn consume_permit_as_contract(
+            ref self: ContractState,
+            from: ContractAddress,
+            operator: ContractAddress,
+            rights: felt252
+        ) -> u64 {
+            let mut number_of_permits = self
+                .rights_map
+                .read((from, operator, get_caller_address(), rights));
+            if number_of_permits != self.get_unlimited_number_of_permits_constant() {
+                number_of_permits -= 1;
+                self
+                    .rights_map
+                    .write((from, operator, get_caller_address(), rights), number_of_permits);
+            }
+            number_of_permits
+        }
+
         fn get_permit_all_contracts_constant(self: @ContractState) -> ContractAddress {
-            get_contract_address()
+            get_contract_address() // Using this contract address so it doesn't conflict with any other address
+        // This contract does not support permits, so we can do this safely
         }
 
         fn get_permit_all_rights_in_contract_constant(self: @ContractState) -> felt252 {
             0 - 1 // This returns the max value of felt252 since it wraps around
+        }
+
+        fn get_unlimited_number_of_permits_constant(self: @ContractState) -> u64 {
+            18446744073709551615 // Max value for u64
         }
 
         fn get_permit_status_for_contract(
@@ -104,13 +150,24 @@ mod Permit3 {
             operator: ContractAddress,
             contract: ContractAddress,
             rights: felt252,
-        ) -> bool {
-            self.rights_map.read((from, operator, contract, rights))
+        ) -> u64 {
+            /// Skipping check for operator-level permit all since there is a dedicated getter for it
+            /// First check for contract-level permit all
+            let mut number_of_permits: u64 = self
+                .rights_map
+                .read(
+                    (from, operator, contract, self.get_permit_all_rights_in_contract_constant())
+                );
+            /// Then check for a specific permit
+            if number_of_permits == 0 {
+                number_of_permits = self.rights_map.read((from, operator, contract, rights));
+            }
+            number_of_permits
         }
 
         fn get_permit_all_status(
             self: @ContractState, from: ContractAddress, operator: ContractAddress
-        ) -> bool {
+        ) -> u64 {
             self
                 .rights_map
                 .read(
