@@ -1,11 +1,14 @@
 #[starknet::contract]
 mod Permit3 {
-    use starknet::{ContractAddress, get_caller_address, get_contract_address, get_block_timestamp};
+    use starknet::{
+        ContractAddress, event::EventEmitter, get_caller_address, get_contract_address,
+        get_block_timestamp
+    };
     use openzeppelin::{
         access::ownable::OwnableComponent, upgrades::upgradeable::UpgradeableComponent
     };
     use permit3::components::{
-        interface::{permit3::IPermit3, versionable::IVersionable},
+        interface::{permit3::{IPermit3, Permit3Event}, versionable::IVersionable},
         util::storefelt252array::StoreFelt252Array
     };
 
@@ -31,6 +34,9 @@ mod Permit3 {
         OwnableEvent: OwnableComponent::Event,
         #[flat]
         UpgradeableEvent: UpgradeableComponent::Event,
+        ///
+        DidSetPermit: Permit3Event::DidSetPermit,
+        DidConsumePermit: Permit3Event::DidConsumePermit,
     }
 
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
@@ -60,18 +66,26 @@ mod Permit3 {
             self
                 .rights_map
                 .write((get_caller_address(), operator, contract, rights), number_of_permits);
+            self
+                .emit(
+                    Event::DidSetPermit(
+                        Permit3Event::DidSetPermit {
+                            from: get_caller_address(),
+                            operator,
+                            contract,
+                            rights,
+                            number_of_permits
+                        }
+                    )
+                );
         }
 
         fn permit_all(ref self: ContractState, operator: ContractAddress, number_of_permits: u64,) {
             self
-                .rights_map
-                .write(
-                    (
-                        get_caller_address(),
-                        operator,
-                        self.get_permit_all_contracts_constant(),
-                        self.get_permit_all_rights_in_contract_constant()
-                    ),
+                .permit(
+                    operator,
+                    self.get_permit_all_contracts_constant(),
+                    self.get_permit_all_rights_in_contract_constant(),
                     number_of_permits
                 );
         }
@@ -83,14 +97,10 @@ mod Permit3 {
             number_of_permits: u64,
         ) {
             self
-                .rights_map
-                .write(
-                    (
-                        get_caller_address(),
-                        operator,
-                        contract,
-                        self.get_permit_all_rights_in_contract_constant()
-                    ),
+                .permit(
+                    operator,
+                    contract,
+                    self.get_permit_all_rights_in_contract_constant(),
                     number_of_permits
                 );
         }
@@ -101,16 +111,7 @@ mod Permit3 {
             contract: ContractAddress,
             rights: felt252
         ) -> u64 {
-            let mut number_of_permits = self
-                .rights_map
-                .read((from, get_caller_address(), contract, rights));
-            if number_of_permits != self.get_unlimited_number_of_permits_constant() {
-                number_of_permits -= 1;
-                self
-                    .rights_map
-                    .write((from, get_caller_address(), contract, rights), number_of_permits);
-            }
-            number_of_permits
+            self._consume_permit(from, get_caller_address(), contract, rights)
         }
 
         fn consume_permit_as_contract(
@@ -119,16 +120,7 @@ mod Permit3 {
             operator: ContractAddress,
             rights: felt252
         ) -> u64 {
-            let mut number_of_permits = self
-                .rights_map
-                .read((from, operator, get_caller_address(), rights));
-            if number_of_permits != self.get_unlimited_number_of_permits_constant() {
-                number_of_permits -= 1;
-                self
-                    .rights_map
-                    .write((from, operator, get_caller_address(), rights), number_of_permits);
-            }
-            number_of_permits
+            self._consume_permit(from, operator, get_caller_address(), rights)
         }
 
         fn get_permit_all_contracts_constant(self: @ContractState) -> ContractAddress {
@@ -178,6 +170,30 @@ mod Permit3 {
                         self.get_permit_all_rights_in_contract_constant()
                     )
                 )
+        }
+    }
+
+    #[generate_trait]
+    impl Permit3InternalImpl of Permit3InternalTrait {
+        fn _consume_permit(
+            ref self: ContractState,
+            from: ContractAddress,
+            operator: ContractAddress,
+            contract: ContractAddress,
+            rights: felt252
+        ) -> u64 {
+            let mut number_of_permits = self.rights_map.read((from, operator, contract, rights));
+            if number_of_permits != self.get_unlimited_number_of_permits_constant() {
+                number_of_permits -= 1;
+                self.rights_map.write((from, operator, contract, rights), number_of_permits);
+            }
+            self
+                .emit(
+                    Event::DidConsumePermit(
+                        Permit3Event::DidConsumePermit { from, operator, contract, rights }
+                    )
+                );
+            number_of_permits
         }
     }
 }

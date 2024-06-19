@@ -45,3 +45,22 @@ pub trait IPermit3<TContractState> {
         self: @TContractState, from: ContractAddress, operator: ContractAddress
     ) -> u64;
 }
+
+pub mod Permit3Event {
+    #[derive(Drop, starknet::Event)]
+    pub struct DidSetPermit {
+        pub from: super::ContractAddress,
+        pub operator: super::ContractAddress,
+        pub contract: super::ContractAddress,
+        pub rights: felt252,
+        pub number_of_permits: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct DidConsumePermit {
+        pub from: super::ContractAddress,
+        pub operator: super::ContractAddress,
+        pub contract: super::ContractAddress,
+        pub rights: felt252,
+    }
+}
